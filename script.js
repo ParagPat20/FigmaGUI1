@@ -1,3 +1,60 @@
+// Custom Alert Component
+class CustomAlert {
+    constructor() {
+        this.alertContainer = null;
+        this.initialize();
+    }
+
+    initialize() {
+        // Create alert container if it doesn't exist
+        if (!this.alertContainer) {
+            this.alertContainer = document.createElement('div');
+            this.alertContainer.className = 'custom-alert-container';
+            document.body.appendChild(this.alertContainer);
+        }
+    }
+
+    show(message, type = 'info', duration = 3000) {
+        const alert = document.createElement('div');
+        alert.className = `custom-alert custom-alert-${type}`;
+        alert.innerHTML = `
+            <div class="custom-alert-content">
+                <span class="custom-alert-message">${message}</span>
+            </div>
+        `;
+        
+        this.alertContainer.appendChild(alert);
+        
+        // Trigger animation
+        setTimeout(() => alert.classList.add('show'), 10);
+        
+        // Auto remove
+        setTimeout(() => {
+            alert.classList.remove('show');
+            setTimeout(() => alert.remove(), 300);
+        }, duration);
+    }
+
+    error(message) {
+        this.show(message, 'error', 5000);
+    }
+
+    success(message) {
+        this.show(message, 'success', 3000);
+    }
+
+    warning(message) {
+        this.show(message, 'warning', 4000);
+    }
+}
+
+const customAlert = new CustomAlert();
+
+// Replace all showAlert calls with customAlert
+function showAlert(message, type = 'info') {
+    customAlert[type] ? customAlert[type](message) : customAlert.show(message);
+}
+
 // DOM Elements
 let elements = {};
 
@@ -79,99 +136,239 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeEventListeners();
     initializeModeOptions();
     initializeMap();
+    initializeDroneListHover();
+    initializeDroneInfoToggle();
 });
 
-// Drone Control Functions
-function handleArm() {
-    currentDrone.isArmed = !currentDrone.isArmed;
-    const armButton = elements.armBtn;
-    const armLabel = armButton.querySelector('.label');
-    
-    if (currentDrone.isArmed) {
-        armButton.style.background = '#f05151';
-        armLabel.textContent = 'DISARM';
-    } else {
-        armButton.style.background = '#70c172';
-        armLabel.textContent = 'ARM';
-    }
-    
-    updateDroneStatus();
+// Utility Functions
+async function handleError(error, context = '') {
+    console.error(`Error ${context}:`, error);
+    customAlert.error(`Error ${context}: ${error.message}`);
 }
 
-function handleLaunch() {
+async function validateDroneState() {
     if (!currentDrone.isArmed) {
-        showAlert('Drone must be armed first');
-        return;
+        throw new Error('Drone must be armed first');
     }
-    currentDrone.isFlying = true;
-    
-    // Update Launch button
-    const launchButton = elements.launchBtn;
-    launchButton.style.background = '#70c172';
-    launchButton.disabled = true;
-    
-    // Update Land button
-    const landButton = elements.landBtn;
-    landButton.style.background = '#f2d2f2';
-    landButton.disabled = false;
-    
-    updateDroneStatus();
 }
 
-function handleLand() {
-    if (!currentDrone.isFlying) return;
-    currentDrone.isFlying = false;
-    
-    // Update Land button
-    const landButton = elements.landBtn;
-    landButton.style.background = '#f05151';
-    landButton.disabled = true;
-    
-    // Reset Launch button
-    const launchButton = elements.launchBtn;
-    launchButton.style.background = '#f2f2f2';
-    launchButton.disabled = false;
-    
-    updateDroneStatus();
+// Serial Connection Management
+class SerialConnection {
+    constructor() {
+        this.port = null;
+        this.isConnected = false;
+        this.portSelect = document.querySelector('.port-select');
+        this.initializeListeners();
+    }
+
+    async initializeListeners() {
+        try {
+            this.portSelect?.addEventListener('click', () => this.listPorts());
+            this.portSelect?.addEventListener('change', (e) => this.connect(e.target.value));
+        } catch (error) {
+            handleError(error, 'initializing serial listeners');
+        }
+    }
+
+    async listPorts() {
+        try {
+            const response = await fetch('http://127.0.0.1:5000/list_ports');
+            if (!response.ok) throw new Error('Failed to fetch ports');
+            
+            const ports = await response.json();
+            this.updatePortList(ports);
+        } catch (error) {
+            handleError(error, 'listing ports');
+        }
+    }
+
+    updatePortList(ports) {
+        if (!this.portSelect) return;
+        
+        this.portSelect.innerHTML = '<option value="" disabled selected>Select Port</option>';
+        ports.forEach(port => {
+            const option = document.createElement('option');
+            option.value = port.port;
+            option.textContent = `${port.port} - ${port.description}`;
+            this.portSelect.appendChild(option);
+        });
+    }
+
+    async connect(portName) {
+        try {
+            if (!portName) throw new Error('No port selected');
+            
+            const response = await fetch('http://127.0.0.1:5000/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port: portName })
+            });
+
+            if (!response.ok) throw new Error('Connection failed');
+            
+            const result = await response.json();
+            this.isConnected = true;
+            customAlert.success('Connected to ' + portName);
+            
+        } catch (error) {
+            handleError(error, 'connecting to port');
+        }
+    }
+
+    async sendCommand(command) {
+        try {
+            if (!this.isConnected) {
+                throw new Error('Not connected to any port');
+            }
+
+            const response = await fetch('http://127.0.0.1:5000/send_command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command })
+            });
+
+            if (!response.ok) throw new Error('Failed to send command');
+            
+            const result = await response.json();
+            if (result.error) throw new Error(result.error);
+            
+            return result;
+            
+        } catch (error) {
+            handleError(error, 'sending command');
+            return null;
+        }
+    }
 }
 
-function handlePosHold() {
-    if (!currentDrone.isFlying) return;
-    currentDrone.isPosHold = !currentDrone.isPosHold;
-    elements.posholdBtn.style.background = currentDrone.isPosHold ? '#f05151' : '#2c7bf2';
-    updateDroneStatus();
+// Initialize serial connection
+const serialConnection = new SerialConnection();
+
+// Drone Control Functions
+async function handleArm() {
+    try {
+        const armButton = elements.armBtn;
+        const resetLoading = showButtonLoading(armButton);
+
+        currentDrone.isArmed = !currentDrone.isArmed;
+        
+        await serialConnection.sendCommand(currentDrone.isArmed ? 'ARM' : 'DISARM');
+        
+        resetLoading();
+        
+        if (currentDrone.isArmed) {
+            armButton.style.background = '#f05151';
+            armButton.classList.add('active');
+            customAlert.success('Drone armed successfully');
+        } else {
+            armButton.style.background = '#70c172';
+            armButton.classList.remove('active');
+            customAlert.success('Drone disarmed successfully');
+        }
+        
+        updateDroneStatus();
+    } catch (error) {
+        handleError(error, 'arming/disarming');
+    }
+}
+
+async function handleLaunch() {
+    try {
+        await validateDroneState();
+        
+        await serialConnection.sendCommand('LAUNCH');
+        currentDrone.isFlying = true;
+        
+        const launchButton = elements.launchBtn;
+        const landButton = elements.landBtn;
+        
+        launchButton.style.background = '#70c172';
+        launchButton.disabled = true;
+        
+        landButton.style.background = '#f2d2f2';
+        landButton.disabled = false;
+        
+        customAlert.success('Drone launched successfully');
+        updateDroneStatus();
+        
+    } catch (error) {
+        handleError(error, 'launching');
+    }
+}
+
+async function handleLand() {
+    try {
+        if (!currentDrone.isFlying) {
+            throw new Error('Drone is not flying');
+        }
+        
+        await serialConnection.sendCommand('LAND');
+        currentDrone.isFlying = false;
+        
+        const landButton = elements.landBtn;
+        const launchButton = elements.launchBtn;
+        
+        landButton.style.background = '#f05151';
+        landButton.disabled = true;
+        
+        launchButton.style.background = '#f2f2f2';
+        launchButton.disabled = false;
+        
+        customAlert.success('Drone landing initiated');
+        updateDroneStatus();
+        
+    } catch (error) {
+        handleError(error, 'landing');
+    }
+}
+
+async function handlePosHold() {
+    try {
+        if (!currentDrone.isFlying) {
+            throw new Error('Drone must be flying to use position hold');
+        }
+        
+        currentDrone.isPosHold = !currentDrone.isPosHold;
+        await serialConnection.sendCommand(currentDrone.isPosHold ? 'POSHOLD_ON' : 'POSHOLD_OFF');
+        
+        elements.posholdBtn.style.background = currentDrone.isPosHold ? '#f05151' : '#2c7bf2';
+        
+        customAlert.success(`Position hold ${currentDrone.isPosHold ? 'enabled' : 'disabled'}`);
+        updateDroneStatus();
+        
+    } catch (error) {
+        handleError(error, 'toggling position hold');
+    }
 }
 
 function handleModes() {
     const modesDropdown = document.querySelector('.modes-dropdown');
     const modesButton = elements.modesBtn;
     
-    // Toggle dropdown visibility
-    const isHidden = modesDropdown.style.display === 'none' || !modesDropdown.style.display;
+    const isHidden = modesDropdown.style.display === 'none';
     
     if (isHidden) {
-        // Get button position relative to viewport
         const buttonRect = modesButton.getBoundingClientRect();
-        
-        // Position dropdown below the button
-        modesDropdown.style.top = `${buttonRect.bottom + 5}px`;
-        modesDropdown.style.left = `${buttonRect.left}px`;
-        
-        // Show dropdown
         modesDropdown.style.display = 'block';
+        
+        // Trigger animation
+        setTimeout(() => {
+            modesDropdown.classList.add('show');
+        }, 10);
+        
         modesButton.style.background = '#2c7bf2';
         
-        // Clear previous active states
-        document.querySelectorAll('.mode-option').forEach(opt => opt.classList.remove('active'));
-        
-        // Highlight current mode
-        const currentModeOption = modesDropdown.querySelector(`[data-mode="${currentDrone.currentMode}"]`);
-        if (currentModeOption) {
-            currentModeOption.classList.add('active');
-        }
+        document.querySelectorAll('.mode-option').forEach(opt => {
+            opt.classList.remove('active');
+            if (opt.dataset.mode === currentDrone.currentMode) {
+                opt.classList.add('active');
+            }
+        });
     } else {
-        // Hide dropdown
-        modesDropdown.style.display = 'none';
+        modesDropdown.classList.remove('show');
+        setTimeout(() => {
+            modesDropdown.style.display = 'none';
+        }, 200);
         modesButton.style.background = '#ffab49';
     }
 }
@@ -204,9 +401,34 @@ function handleProgramChange(e) {
 }
 
 function handleStart() {
-    elements.startBtn.disabled = true;
-    elements.pauseBtn.disabled = false;
-    startMission();
+    const startBtn = elements.startBtn;
+    const startLabel = startBtn.querySelector('.start-label');
+    const pauseBtn = elements.pauseBtn;
+    
+    // Toggle between start and stop states
+    const isStarted = startBtn.classList.contains('stop');
+    
+    if (!isStarted) {
+        // Change to stop state
+        startBtn.classList.add('stop');
+        startBtn.style.background = '#f05151';
+        startLabel.textContent = 'STOP';
+        startBtn.classList.add('active');
+        pauseBtn.disabled = false;
+        
+        // Start the mission
+        startMission();
+    } else {
+        // Change back to start state
+        startBtn.classList.remove('stop');
+        startBtn.style.background = '#70c172';
+        startLabel.textContent = 'START';
+        startBtn.classList.remove('active');
+        pauseBtn.disabled = true;
+        
+        // Stop the mission
+        stopMission();
+    }
 }
 
 function handlePause() {
@@ -268,11 +490,6 @@ function startMission() {
 
 function pauseMission() {
     // Implementation for pausing mission
-}
-
-function showAlert(message) {
-    // Implementation for showing alerts
-    console.log(message);
 }
 
 // View Management Functions
@@ -424,218 +641,73 @@ function initializeModeOptions() {
     });
 }
 
-class SerialConnection {
-    constructor() {
-        this.isConnected = false;
-        this.currentPort = null;
-        this.setupPortSelector();
-    }
+// Add loading spinner to buttons during async operations
+function showButtonLoading(button) {
+    const originalContent = button.innerHTML;
+    button.innerHTML = '<div class="loading-spinner"></div>';
+    button.disabled = true;
+    return () => {
+        button.innerHTML = originalContent;
+        button.disabled = false;
+    };
+}
 
-    async updatePortList() {
-        try {
-            const response = await fetch('http://127.0.0.1:5000/list_ports');
-            if (!response.ok) throw new Error('Failed to fetch ports');
-            const ports = await response.json();
-            
-            const portSelect = document.querySelector('.port-select');
-            if (!portSelect) return;
-
-            const currentValue = portSelect.value;
-            portSelect.innerHTML = '<option value="" disabled selected>Select Port</option>';
-            
-            ports.forEach(port => {
-                const option = document.createElement('option');
-                option.value = port.port;
-                option.textContent = port.description || port.port;
-                if (port.port === currentValue) {
-                    option.selected = true;
-                }
-                portSelect.appendChild(option);
-            });
-        } catch (error) {
-            console.error('Failed to get ports:', error);
-        }
-    }
-
-    setupPortSelector() {
-        const portSelect = document.querySelector('.port-select');
-        if (!portSelect) return;
-
-        // Update ports list when dropdown is clicked
-        portSelect.addEventListener('mousedown', () => {
-            this.updatePortList();
+// Add hover effect for drone list
+function initializeDroneListHover() {
+    const droneList = document.querySelector('.drone-list');
+    if (droneList) {
+        droneList.addEventListener('mouseenter', () => {
+            droneList.style.transform = 'scale(0.92)';
         });
-        
-        // Handle selection
-        portSelect.addEventListener('change', (e) => {
-            if (e.target.value) {
-                this.connectToPort(e.target.value);
-            }
+        droneList.addEventListener('mouseleave', () => {
+            droneList.style.transform = 'scale(0.9)';
         });
-    }
-
-    async connectToPort(port) {
-        try {
-            const response = await fetch('http://127.0.0.1:5000/connect', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ 
-                    port: port,
-                    baudrate: 115200
-                })
-            });
-            
-            if (!response.ok) {
-                throw new Error(await response.text());
-            }
-
-            const result = await response.json();
-            this.updateConnectionStatus(result.status === "connected");
-            
-            if (result.status === "connected") {
-                this.isConnected = true;
-                this.currentPort = port;
-                console.log('Connected to', port);
-            }
-        } catch (error) {
-            console.error('Connection error:', error);
-            this.updateConnectionStatus(false);
-            this.isConnected = false;
-        }
-    }
-
-    updateConnectionStatus(isConnected) {
-        const espNowText = document.querySelector('.esp-now');
-        const portText = document.querySelector('.port');
-        
-        if (!espNowText || !portText) return;
-
-        const color = isConnected ? '#70C172' : '#F05151';
-        espNowText.style.color = color;
-        portText.style.color = color;
-    }
-
-    async sendCommand(command) {
-        if (!this.isConnected) {
-            console.error('Not connected to any port');
-            return null;
-        }
-
-        try {
-            const response = await fetch('http://127.0.0.1:5000/send_command', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ command })
-            });
-            
-            if (!response.ok) {
-                throw new Error(await response.text());
-            }
-
-            const result = await response.json();
-            console.log(`Command sent: ${command}, Response:`, result);
-            return result;
-        } catch (error) {
-            console.error('Command error:', error);
-            return null;
-        }
-    }
-
-    // Drone-specific commands
-    async arm() {
-        return await this.sendCommand('ARM');
-    }
-
-    async disarm() {
-        return await this.sendCommand('DISARM');
-    }
-
-    async launch() {
-        return await this.sendCommand('LAUNCH');
-    }
-
-    async land() {
-        return await this.sendCommand('LAND');
-    }
-
-    async setMode(mode) {
-        return await this.sendCommand(`MODE ${mode}`);
-    }
-
-    async setPosHold(enabled) {
-        return await this.sendCommand(enabled ? 'POSHOLD_ON' : 'POSHOLD_OFF');
-    }
-
-    async setAltitude(altitude) {
-        return await this.sendCommand(`ALT ${altitude}`);
     }
 }
 
-// Initialize serial connection when page loads
-document.addEventListener('DOMContentLoaded', () => {
-    const serialConnection = new SerialConnection();
+// Add stopMission function
+function stopMission() {
+    // Implementation for stopping mission
+    customAlert.warning('Mission stopped');
+}
 
-    // Arm/Disarm button
-    const armBtn = document.querySelector('.arm');
-    if (armBtn) {
-        armBtn.addEventListener('click', async () => {
-            if (currentDrone.isArmed) {
-                await serialConnection.disarm();
-            } else {
-                await serialConnection.arm();
-            }
-        });
-    }
-
-    // Launch button
-    const launchBtn = document.querySelector('.launch');
-    if (launchBtn) {
-        launchBtn.addEventListener('click', async () => {
-            if (!currentDrone.isArmed) {
-                showAlert('Drone must be armed first');
-                return;
-            }
-            await serialConnection.launch();
-        });
-    }
-
-    // Land button
-    const landBtn = document.querySelector('.land');
-    if (landBtn) {
-        landBtn.addEventListener('click', async () => {
-            await serialConnection.land();
-        });
-    }
-
-    // PosHold button
-    const posholdBtn = document.querySelector('.poshold');
-    if (posholdBtn) {
-        posholdBtn.addEventListener('click', async () => {
-            await serialConnection.setPosHold(!currentDrone.isPosHold);
-        });
-    }
-
-    // Mode selection
-    const modeOptions = document.querySelectorAll('.mode-option');
-    modeOptions.forEach(option => {
-        option.addEventListener('click', async (e) => {
-            const mode = e.target.dataset.mode;
-            await serialConnection.setMode(mode);
-        });
+// Add these functions for handling the drone info panel toggle
+function initializeDroneInfoToggle() {
+    const droneInfo = document.querySelector('.drone-info');
+    const mainContainer = document.querySelector('.main-container');
+    
+    // Create and add toggle button
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'drone-info-toggle';
+    toggleBtn.innerHTML = '<span class="toggle-icon"></span>';
+    droneInfo.appendChild(toggleBtn);
+    
+    // Add click handler
+    toggleBtn.addEventListener('click', () => {
+        const isCollapsed = droneInfo.classList.contains('collapsed');
+        
+        // Add transition class for smooth animation
+        droneInfo.classList.add('transitioning');
+        
+        // Toggle collapsed state
+        droneInfo.classList.toggle('collapsed');
+        toggleBtn.classList.toggle('collapsed');
+        mainContainer.classList.toggle('drone-info-collapsed');
+        
+        // Store state in localStorage
+        localStorage.setItem('droneInfoCollapsed', !isCollapsed);
+        
+        // Remove transition class after animation completes
+        setTimeout(() => {
+            droneInfo.classList.remove('transitioning');
+        }, 300);
     });
-
-    // Altitude input
-    const altInput = document.querySelector('.measurement-12 input');
-    if (altInput) {
-        altInput.addEventListener('change', async (e) => {
-            const altitude = parseFloat(e.target.value);
-            if (!isNaN(altitude)) {
-                await serialConnection.setAltitude(altitude);
-            }
-        });
+    
+    // Restore previous state
+    const wasCollapsed = localStorage.getItem('droneInfoCollapsed') === 'true';
+    if (wasCollapsed) {
+        droneInfo.classList.add('collapsed');
+        toggleBtn.classList.add('collapsed');
+        mainContainer.classList.add('drone-info-collapsed');
     }
-});
+}
